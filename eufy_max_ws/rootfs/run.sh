@@ -11,16 +11,6 @@ if bashio::var.is_empty "${USERNAME}" || bashio::var.is_empty "${PASSWORD}"; the
     bashio::exit.nok "Benutzername und Passwort muessen in der Konfiguration gesetzt sein"
 fi
 
-export USERNAME
-export PASSWORD
-export COUNTRY
-export LANGUAGE
-export PORT=3000
-export TRUSTED_DEVICE_NAME
-export EVENT_DURATION_SECONDS
-export ACCEPT_INVITATIONS
-export POLLING_INTERVAL_MINUTES
-
 COUNTRY=$(bashio::config 'country')
 LANGUAGE=$(bashio::config 'language')
 TRUSTED_DEVICE_NAME=$(bashio::config 'trusted_device_name')
@@ -28,24 +18,42 @@ EVENT_DURATION_SECONDS=$(bashio::config 'event_duration_seconds')
 ACCEPT_INVITATIONS=$(bashio::config 'accept_invitations')
 POLLING_INTERVAL_MINUTES=$(bashio::config 'polling_interval_minutes')
 
+export USERNAME PASSWORD COUNTRY LANGUAGE TRUSTED_DEVICE_NAME
+export EVENT_DURATION_SECONDS ACCEPT_INVITATIONS POLLING_INTERVAL_MINUTES
+export PORT=3000
+
 if bashio::config.true 'debug'; then
     export DEBUG="eufy-security-client:*"
     bashio::log.info "Debug-Modus aktiv"
 fi
 
-# Der Integration mitteilen, wo wir erreichbar sind. Damit muss im
-# Einrichtungsdialog nichts mehr von Hand eingetragen werden.
-DISCOVERY_CONFIG=$(bashio::var.json \
-    host "$(hostname)" \
-    port "^3000" \
-)
+# Das npm-Paket legt keinen ausfuehrbaren Befehl an, die server.js wird
+# direkt mit Node gestartet.
+SERVER="/opt/eufy/node_modules/eufy-security-ws/dist/bin/server.js"
 
-if bashio::discovery "eufy_max" "${DISCOVERY_CONFIG}" > /dev/null; then
-    bashio::log.info "Integration wurde ueber Discovery benachrichtigt"
-else
-    bashio::log.warning "Discovery fehlgeschlagen - Integration ggf. von Hand einrichten"
+if [ ! -f "${SERVER}" ]; then
+    bashio::log.warning "Server nicht am erwarteten Ort, suche im Dateisystem"
+    SERVER=$(find / -path /proc -prune -o -name "server.js" -path "*eufy-security-ws*" -print 2>/dev/null | head -n 1)
 fi
+
+if [ -z "${SERVER}" ] || [ ! -f "${SERVER}" ]; then
+    bashio::exit.nok "eufy-security-ws wurde im Image nicht gefunden - Add-on neu bauen"
+fi
+
+bashio::log.info "Starte ${SERVER}"
+
+# Discovery erst nach dem Start melden, damit die Integration nicht in
+# einen noch nicht lauschenden Port rennt.
+(
+    sleep 8
+    DISCOVERY_CONFIG=$(bashio::var.json host "$(hostname)" port "^3000")
+    if bashio::discovery "eufy_max" "${DISCOVERY_CONFIG}" > /dev/null; then
+        bashio::log.info "Integration ueber Discovery benachrichtigt"
+    else
+        bashio::log.warning "Discovery fehlgeschlagen - Integration von Hand einrichten"
+    fi
+) &
 
 bashio::log.info "Server laeuft auf Port 3000 (Host: $(hostname))"
 
-exec eufy-security-ws
+exec node "${SERVER}"
