@@ -11,24 +11,40 @@ if bashio::var.is_empty "${USERNAME}" || bashio::var.is_empty "${PASSWORD}"; the
     bashio::exit.nok "Benutzername und Passwort muessen in der Konfiguration gesetzt sein"
 fi
 
-COUNTRY=$(bashio::config 'country')
-LANGUAGE=$(bashio::config 'language')
-TRUSTED_DEVICE_NAME=$(bashio::config 'trusted_device_name')
-EVENT_DURATION_SECONDS=$(bashio::config 'event_duration_seconds')
-ACCEPT_INVITATIONS=$(bashio::config 'accept_invitations')
-POLLING_INTERVAL_MINUTES=$(bashio::config 'polling_interval_minutes')
+CONFIG_FILE="/data/config.json"
 
-export USERNAME PASSWORD COUNTRY LANGUAGE TRUSTED_DEVICE_NAME
-export EVENT_DURATION_SECONDS ACCEPT_INVITATIONS POLLING_INTERVAL_MINUTES
-export PORT=3000
+# eufy-security-ws liest seine Einstellungen ausschliesslich aus einer
+# config.json. Die wird hier bei jedem Start aus den Add-on-Optionen neu
+# erzeugt, damit Aenderungen im UI sofort greifen.
+jq -n \
+    --arg username "${USERNAME}" \
+    --arg password "${PASSWORD}" \
+    --arg country "$(bashio::config 'country')" \
+    --arg language "$(bashio::config 'language')" \
+    --arg device "$(bashio::config 'trusted_device_name')" \
+    --argjson event "$(bashio::config 'event_duration_seconds')" \
+    --argjson invitations "$(bashio::config 'accept_invitations')" \
+    --argjson polling "$(bashio::config 'polling_interval_minutes')" \
+    '{
+        username: $username,
+        password: $password,
+        country: $country,
+        language: $language,
+        trustedDeviceName: $device,
+        eventDurationSeconds: $event,
+        acceptInvitations: $invitations,
+        pollingIntervalMinutes: $polling,
+        port: 3000
+    }' > "${CONFIG_FILE}"
+
+chmod 600 "${CONFIG_FILE}"
+bashio::log.info "Konfiguration geschrieben nach ${CONFIG_FILE}"
 
 if bashio::config.true 'debug'; then
     export DEBUG="eufy-security-client:*"
     bashio::log.info "Debug-Modus aktiv"
 fi
 
-# Das npm-Paket legt keinen ausfuehrbaren Befehl an, die server.js wird
-# direkt mit Node gestartet.
 SERVER="/opt/eufy/node_modules/eufy-security-ws/dist/bin/server.js"
 
 if [ ! -f "${SERVER}" ]; then
@@ -40,12 +56,10 @@ if [ -z "${SERVER}" ] || [ ! -f "${SERVER}" ]; then
     bashio::exit.nok "eufy-security-ws wurde im Image nicht gefunden - Add-on neu bauen"
 fi
 
-bashio::log.info "Starte ${SERVER}"
-
 # Discovery erst nach dem Start melden, damit die Integration nicht in
 # einen noch nicht lauschenden Port rennt.
 (
-    sleep 8
+    sleep 10
     DISCOVERY_CONFIG=$(bashio::var.json host "$(hostname)" port "^3000")
     if bashio::discovery "eufy_max" "${DISCOVERY_CONFIG}" > /dev/null; then
         bashio::log.info "Integration ueber Discovery benachrichtigt"
@@ -56,4 +70,4 @@ bashio::log.info "Starte ${SERVER}"
 
 bashio::log.info "Server laeuft auf Port 3000 (Host: $(hostname))"
 
-exec node "${SERVER}"
+exec node "${SERVER}" "${CONFIG_FILE}"

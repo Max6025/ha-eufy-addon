@@ -5,7 +5,7 @@ ENV LANG=C.UTF-8
 ENV EUFY_DIR=/opt/eufy
 
 # Node und Buildwerkzeuge fuer die nativen Abhaengigkeiten
-RUN apk add --no-cache nodejs npm \
+RUN apk add --no-cache nodejs npm jq \
     && apk add --no-cache --virtual .build-deps python3 make g++ \
     && mkdir -p "${EUFY_DIR}" \
     && cd "${EUFY_DIR}" \
