@@ -1,0 +1,43 @@
+---
+name: Eufy Max WS
+version: "1.0.0"
+slug: eufy_max_ws
+description: WebSocket-Server fuer Eufy-Kameras, passend zur Eufy Max Integration
+url: https://github.com/Max6025/eufy_max_addon
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+startup: services
+boot: auto
+hassio_api: true
+hassio_role: default
+discovery:
+  - eufy_max
+ports:
+  3000/tcp: 3000
+ports_description:
+  3000/tcp: WebSocket-API (wird von der Integration automatisch gefunden)
+map:
+  - share:rw
+options:
+  username: ""
+  password: ""
+  country: DE
+  language: de
+  trusted_device_name: homeassistant
+  event_duration_seconds: 10
+  accept_invitations: true
+  polling_interval_minutes: 10
+  debug: false
+schema:
+  username: str
+  password: password
+  country: str
+  language: str
+  trusted_device_name: str
+  event_duration_seconds: int(1,120)
+  accept_invitations: bool
+  polling_interval_minutes: int(1,240)
+  debug: bool
