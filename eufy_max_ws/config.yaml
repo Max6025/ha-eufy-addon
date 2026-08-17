@@ -1,9 +1,9 @@
 ---
 name: Eufy Max WS
-version: "1.0.3"
+version: "1.0.4"
 slug: eufy_max_ws
 description: WebSocket-Server fuer Eufy-Kameras, passend zur Eufy Max Integration
-url: https://github.com/Max6025/eufy_max_addon
+url: https://github.com/Max6025/ha-eufy-addon
 arch:
   - aarch64
   - amd64

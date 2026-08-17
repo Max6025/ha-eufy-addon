@@ -4,4 +4,4 @@ build_from:
   amd64: ghcr.io/home-assistant/amd64-base:3.19
   armv7: ghcr.io/home-assistant/armv7-base:3.19
 labels:
-  org.opencontainers.image.source: https://github.com/Max6025/eufy_max_addon
+  org.opencontainers.image.source: https://github.com/Max6025/ha-eufy-addon

@@ -34,6 +34,7 @@ jq -n \
         eventDurationSeconds: $event,
         acceptInvitations: $invitations,
         pollingIntervalMinutes: $polling,
+        host: "0.0.0.0",
         port: 3000
     }' > "${CONFIG_FILE}"
 
@@ -45,6 +46,11 @@ chmod 600 "${CONFIG_FILE}"
 ln -sf "${CONFIG_FILE}" /config.json
 
 bashio::log.info "Konfiguration geschrieben nach ${CONFIG_FILE} (verlinkt nach /config.json)"
+
+# Der Server bindet sonst nur auf localhost und ist damit aus dem
+# HA-Core-Container nicht erreichbar.
+export HOST="0.0.0.0"
+export PORT=3000
 
 if bashio::config.true 'debug'; then
     export DEBUG="eufy-security-client:*"
