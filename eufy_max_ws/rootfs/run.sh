@@ -13,6 +13,22 @@ fi
 
 CONFIG_FILE="/data/config.json"
 
+# Feste IP-Adressen der Stationen. Verhindert, dass sich Kameras ueber
+# Eufys Cloud-Relay verbinden statt lokal - das Relay ist langsam und
+# bricht haeufig weg. Format je Eintrag: SERIENNUMMER:IP
+STATION_IPS="{}"
+if bashio::config.has_value 'station_ip_addresses'; then
+    STATION_IPS=$(bashio::config 'station_ip_addresses' \
+        | jq -R -s 'split("\n")
+                    | map(select(length > 0))
+                    | map(split(":"))
+                    | map(select(length == 2))
+                    | map({(.[0] | ltrimstr(" ") | rtrimstr(" ")):
+                           (.[1] | ltrimstr(" ") | rtrimstr(" "))})
+                    | add // {}')
+    bashio::log.info "Feste Stations-IPs: ${STATION_IPS}"
+fi
+
 # eufy-security-ws liest seine Einstellungen ausschliesslich aus einer
 # config.json. Die wird hier bei jedem Start aus den Add-on-Optionen neu
 # erzeugt, damit Aenderungen im UI sofort greifen.
@@ -25,6 +41,8 @@ jq -n \
     --argjson event "$(bashio::config 'event_duration_seconds')" \
     --argjson invitations "$(bashio::config 'accept_invitations')" \
     --argjson polling "$(bashio::config 'polling_interval_minutes')" \
+    --argjson p2p "$(bashio::config 'p2p_connection_setup')" \
+    --argjson stations "${STATION_IPS}" \
     '{
         username: $username,
         password: $password,
@@ -34,6 +52,8 @@ jq -n \
         eventDurationSeconds: $event,
         acceptInvitations: $invitations,
         pollingIntervalMinutes: $polling,
+        p2pConnectionSetup: $p2p,
+        stationIPAddresses: $stations,
         persistentDir: "/data"
     }' > "${CONFIG_FILE}"
 
