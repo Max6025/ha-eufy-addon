@@ -34,27 +34,17 @@ jq -n \
         eventDurationSeconds: $event,
         acceptInvitations: $invitations,
         pollingIntervalMinutes: $polling,
-        host: "0.0.0.0",
-        port: 3000
+        persistentDir: "/data"
     }' > "${CONFIG_FILE}"
 
 chmod 600 "${CONFIG_FILE}"
-
-# Der Server nimmt keinen Pfad als Argument, sondern erwartet die Datei
-# fest unter /config.json. Die eigentliche Datei bleibt in /data, damit
-# sie persistent ist, und wird dorthin verlinkt.
-ln -sf "${CONFIG_FILE}" /config.json
-
-bashio::log.info "Konfiguration geschrieben nach ${CONFIG_FILE} (verlinkt nach /config.json)"
-
-# Der Server bindet sonst nur auf localhost und ist damit aus dem
-# HA-Core-Container nicht erreichbar.
-export HOST="0.0.0.0"
-export PORT=3000
+bashio::log.info "Konfiguration geschrieben nach ${CONFIG_FILE}"
 
 if bashio::config.true 'debug'; then
-    export DEBUG="eufy-security-client:*"
+    VERBOSE="--verbose"
     bashio::log.info "Debug-Modus aktiv"
+else
+    VERBOSE=""
 fi
 
 SERVER="/opt/eufy/node_modules/eufy-security-ws/dist/bin/server.js"
@@ -71,7 +61,7 @@ fi
 # Discovery erst nach dem Start melden, damit die Integration nicht in
 # einen noch nicht lauschenden Port rennt.
 (
-    sleep 10
+    sleep 12
     DISCOVERY_CONFIG=$(bashio::var.json host "$(hostname)" port "^3000")
     if bashio::discovery "eufy_max" "${DISCOVERY_CONFIG}" > /dev/null; then
         bashio::log.info "Integration ueber Discovery benachrichtigt"
@@ -80,6 +70,11 @@ fi
     fi
 ) &
 
-bashio::log.info "Server laeuft auf Port 3000 (Host: $(hostname))"
+# WICHTIG: Host, Port und Konfigurationspfad werden ausschliesslich ueber
+# die Kommandozeile ausgewertet. Weder die config.json noch Umgebungs-
+# variablen werden dafuer gelesen. Ohne --host bindet der Server auf
+# localhost und ist aus dem HA-Core-Container nicht erreichbar.
+bashio::log.info "Starte Server auf 0.0.0.0:3000 (Host: $(hostname))"
 
-exec node "${SERVER}"
+# shellcheck disable=SC2086
+exec node "${SERVER}" --config "${CONFIG_FILE}" --host 0.0.0.0 --port 3000 ${VERBOSE}
