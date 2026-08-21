@@ -14,6 +14,15 @@ RUN apk add --no-cache nodejs npm jq \
     && apk del .build-deps \
     && ls -l "${EUFY_DIR}/node_modules/eufy-security-ws/dist/bin/server.js"
 
+# Neue Kameramodelle nachruesten, die eufy-security-client noch nicht kennt.
+# Laeuft nach der Installation, damit der Patch bei jedem Neubau frisch
+# angewandt wird.
+COPY patch-devices.js /opt/patch-devices.js
+RUN node /opt/patch-devices.js \
+    "${EUFY_DIR}/node_modules/eufy-security-ws/node_modules/eufy-security-client" \
+    || node /opt/patch-devices.js \
+    "${EUFY_DIR}/node_modules/eufy-security-client"
+
 COPY rootfs /
 RUN chmod a+x /run.sh
 
