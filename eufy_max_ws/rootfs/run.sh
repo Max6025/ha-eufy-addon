@@ -93,20 +93,22 @@ ARGS=(--config "${CONFIG_FILE}" --host 0.0.0.0 --port 3000)
 # ---------------------------------------------------------------------
 
 if bashio::config.true 'event_log'; then
-    # Nur Erkennungen zeigen. Der Server laeuft ausfuehrlich, aber es
-    # wird alles herausgefiltert, was nichts mit einer Erkennung zu tun
-    # hat. Ideal, um zu pruefen, ob eine Kamera ueberhaupt meldet.
+    # Nur Erkennungen zeigen. Gefiltert wird mit awk - das BusyBox-grep
+    # im Alpine-Image kennt kein --line-buffered und wuerde die Ausgabe
+    # blockweise zurueckhalten.
     bashio::log.info "Ereignisfilter aktiv - es werden nur Erkennungen angezeigt"
 
-    MUSTER="person detected|motion detected|pet detected|vehicle detected"
-    MUSTER="${MUSTER}|sound detected|crying detected|package|rings|ringing"
-    MUSTER="${MUSTER}|Detected|onPerson|onMotion|onPet|onVehicle|onRing"
-    MUSTER="${MUSTER}|PushMessage|push message|onMessage|CusPush|received message"
-    MUSTER="${MUSTER}|event_type|eventType|alarm|Alarm"
-
-    node "${SERVER}" "${ARGS[@]}" --verbose 2>&1 \
-        | grep --line-buffered -iE "${MUSTER}" \
-        | grep --line-buffered -viE "heartbeat|Sending ping|checkin"
+    node "${SERVER}" "${ARGS[@]}" --verbose 2>&1 | awk '
+        BEGIN { IGNORECASE = 1 }
+        # Rauschen ausblenden
+        /heartbeat|Heartbeat|Sending ping|checkin|Checkin/ { next }
+        # Erkennungen und eingehende Nachrichten durchlassen
+        /detected|Detected|onPerson|onMotion|onPet|onVehicle|onRing/ { print; fflush(); next }
+        /person|Person|human|Human|motion|Motion|vehicle|Vehicle/ { print; fflush(); next }
+        /rings|ringing|Ringing|package|Package/ { print; fflush(); next }
+        /PushMessage|push message|onMessage|CusPush|received message/ { print; fflush(); next }
+        /event_type|eventType|alarm|Alarm/ { print; fflush(); next }
+    '
     exit 0
 fi
 
