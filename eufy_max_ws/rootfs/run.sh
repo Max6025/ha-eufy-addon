@@ -14,8 +14,7 @@ fi
 CONFIG_FILE="/data/config.json"
 
 # Feste IP-Adressen der Stationen. Verhindert, dass sich Kameras ueber
-# Eufys Cloud-Relay verbinden statt lokal - das Relay ist langsam und
-# bricht haeufig weg. Format je Eintrag: SERIENNUMMER:IP
+# Eufys Cloud-Relay verbinden statt lokal. Format je Eintrag: SERIENNUMMER:IP
 STATION_IPS="{}"
 if bashio::config.has_value 'station_ip_addresses'; then
     STATION_IPS=$(bashio::config 'station_ip_addresses' \
@@ -30,8 +29,8 @@ if bashio::config.has_value 'station_ip_addresses'; then
 fi
 
 # eufy-security-ws liest seine Einstellungen ausschliesslich aus einer
-# config.json. Die wird hier bei jedem Start aus den Add-on-Optionen neu
-# erzeugt, damit Aenderungen im UI sofort greifen.
+# config.json. Die wird hier bei jedem Start neu erzeugt, damit
+# Aenderungen im UI sofort greifen.
 jq -n \
     --arg username "${USERNAME}" \
     --arg password "${PASSWORD}" \
@@ -60,13 +59,6 @@ jq -n \
 chmod 600 "${CONFIG_FILE}"
 bashio::log.info "Konfiguration geschrieben nach ${CONFIG_FILE}"
 
-if bashio::config.true 'debug'; then
-    VERBOSE="--verbose"
-    bashio::log.info "Debug-Modus aktiv"
-else
-    VERBOSE=""
-fi
-
 SERVER="/opt/eufy/node_modules/eufy-security-ws/dist/bin/server.js"
 
 if [ ! -f "${SERVER}" ]; then
@@ -90,11 +82,37 @@ fi
     fi
 ) &
 
-# WICHTIG: Host, Port und Konfigurationspfad werden ausschliesslich ueber
-# die Kommandozeile ausgewertet. Weder die config.json noch Umgebungs-
-# variablen werden dafuer gelesen. Ohne --host bindet der Server auf
-# localhost und ist aus dem HA-Core-Container nicht erreichbar.
 bashio::log.info "Starte Server auf 0.0.0.0:3000 (Host: $(hostname))"
 
-# shellcheck disable=SC2086
-exec node "${SERVER}" --config "${CONFIG_FILE}" --host 0.0.0.0 --port 3000 ${VERBOSE}
+# Host, Port und Konfigurationspfad werden ausschliesslich ueber die
+# Kommandozeile ausgewertet - nicht ueber die config.json.
+ARGS=(--config "${CONFIG_FILE}" --host 0.0.0.0 --port 3000)
+
+# ---------------------------------------------------------------------
+# Protokollmodus
+# ---------------------------------------------------------------------
+
+if bashio::config.true 'event_log'; then
+    # Nur Erkennungen zeigen. Der Server laeuft ausfuehrlich, aber es
+    # wird alles herausgefiltert, was nichts mit einer Erkennung zu tun
+    # hat. Ideal, um zu pruefen, ob eine Kamera ueberhaupt meldet.
+    bashio::log.info "Ereignisfilter aktiv - es werden nur Erkennungen angezeigt"
+
+    MUSTER="person detected|motion detected|pet detected|vehicle detected"
+    MUSTER="${MUSTER}|sound detected|crying detected|package|rings|ringing"
+    MUSTER="${MUSTER}|Detected|onPerson|onMotion|onPet|onVehicle|onRing"
+    MUSTER="${MUSTER}|PushMessage|push message|onMessage|CusPush|received message"
+    MUSTER="${MUSTER}|event_type|eventType|alarm|Alarm"
+
+    node "${SERVER}" "${ARGS[@]}" --verbose 2>&1 \
+        | grep --line-buffered -iE "${MUSTER}" \
+        | grep --line-buffered -viE "heartbeat|Sending ping|checkin"
+    exit 0
+fi
+
+if bashio::config.true 'debug'; then
+    bashio::log.info "Debug-Modus aktiv - sehr ausfuehrliches Protokoll"
+    ARGS+=(--verbose)
+fi
+
+exec node "${SERVER}" "${ARGS[@]}"
