@@ -7,24 +7,25 @@
  * Befehl mit NotSupportedError ab - selbst wenn die Kamera protokollseitig
  * identisch zu einem bekannten Modell ist.
  *
- * Zweiter, ebenso wichtiger Punkt: Die Bibliothek waehlt anhand des Typs
- * die Geraeteklasse aus. Nur bestimmte Klassen verarbeiten die
- * Push-Ereignisse 3101 (Bewegung), 3102 (Person), 3106 (Tier) und 3107
- * (Fahrzeug). Ein unbekannter Typ landet in der einfachen Camera-Klasse,
- * die diese Ereignisse ignoriert - die Kamera meldet dann nie eine
- * Erkennung, obwohl die Nachricht ankommt.
+ * Zweiter Punkt: Die Bibliothek waehlt anhand des Typs die Geraeteklasse
+ * aus. Nur bestimmte Klassen verarbeiten die Push-Ereignisse 3101
+ * (Bewegung), 3102 (Person), 3106 (Tier) und 3107 (Fahrzeug). Ein
+ * unbekannter Typ landet in der einfachen Camera-Klasse, die diese
+ * Ereignisse ignoriert.
  *
- * Ebenso haengen Befehle wie das Schalten des Lichts an Typpruefungen:
- * station.switchLight() geht eine lange Fallunterscheidung durch und
- * wirft am Ende NotSupportedError, wenn keine passt.
+ * Dritter Punkt: Befehle wie das Schalten des Lichts gehen durch eine
+ * lange Fallunterscheidung, in der jedes Modell sein eigenes
+ * Befehlsformat hat. Die eufyCam C37 ist eine Schwenk-/Neigekamera und
+ * braucht dasselbe Format wie die SoloCam S340 - nicht das der festen
+ * eufyCam C35. Faellt der Aufruf durch alle Zweige, wirft die Bibliothek
+ * NotSupportedError; passt der Zweig nicht, geht der Befehl ins Leere.
  *
  * Dieses Skript kopiert die Tabelleneintraege eines bekannten
  * Referenzmodells auf den neuen Typ UND sorgt dafuer, dass der Typ
- * dieselben Pruefungen besteht wie die Vorlage.
+ * dieselben Pruefungen besteht.
  *
  * Es laeuft beim Bauen des Images, direkt nach npm install, und wird bei
- * jedem Neubau frisch angewandt. Angewandt wird nur, was wirklich fehlt -
- * kommt der Eintrag irgendwann von bropat selbst, passiert nichts mehr.
+ * jedem Neubau frisch angewandt.
  */
 
 const fs = require("fs");
@@ -36,13 +37,22 @@ const MODELLE = [
     typ: 10037,
     name: "CAMERA_C37",
     anzeige: "eufyCam C37 (T814X)",
-    // eufyCam C35 - gleiche Familie, Akku plus Solar.
-    // Wichtig: Der C35 gehoert zu isSoloCameras und bekommt damit die
-    // SoloCamera-Klasse, die Personenerkennung verarbeitet. Ausserdem
-    // gibt es fuer isCameraC35 einen eigenen Lichtbefehl - genau den,
-    // den Kameras ohne HomeBase brauchen.
+    // eufyCam C35 - gleiche Familie, Akku plus Solar. Liefert die
+    // Eigenschafts- und Befehlstabellen.
     vorlage: 10035,
-    pruefungen: ["isCamera", "isSoloCameras", "isCameraC35"],
+    // Pruefungen, die den neuen Typ ebenfalls durchlassen muessen:
+    //   isCamera                  - ueberhaupt als Kamera behandeln
+    //   isSoloCameras             - Geraeteklasse SoloCamera, verarbeitet
+    //                               Personen- und Bewegungserkennung
+    //   isCameraC35               - Eigenschaftsauswertung der Familie
+    //   isOutdoorPanAndTiltCamera - Befehlsformat fuer Schwenkkameras;
+    //                               noetig fuer Licht und Schwenken
+    pruefungen: [
+      "isCamera",
+      "isSoloCameras",
+      "isCameraC35",
+      "isOutdoorPanAndTiltCamera",
+    ],
   },
 ];
 
@@ -50,7 +60,7 @@ const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
 const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
 
-const MARKER = "// ---- eufy_max_patch v2 ----";
+const MARKER = "// ---- eufy_max_patch v3 ----";
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
@@ -123,14 +133,6 @@ ${MARKER}
 // ---------------------------------------------------------------------
 // 2. device.js - Typpruefungen erweitern
 // ---------------------------------------------------------------------
-//
-// Entscheidend ist isSoloCameras: eufysecurity.js waehlt darueber die
-// SoloCamera-Klasse aus, und nur die verarbeitet die Push-Ereignisse
-// 3101/3102/3106/3107. Ohne diese Zeile bleibt personDetected fuer immer
-// auf false, egal was Eufy schickt.
-//
-// isCameraC35 wiederum schaltet in station.switchLight() den Zweig frei,
-// der fuer Kameras ohne HomeBase gedacht ist.
 
 if (pruefen(DEVICE)) {
   const liste = JSON.stringify(
