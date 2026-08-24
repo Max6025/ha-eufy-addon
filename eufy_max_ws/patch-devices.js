@@ -7,12 +7,24 @@
  * Befehl mit NotSupportedError ab - selbst wenn die Kamera protokollseitig
  * identisch zu einem bekannten Modell ist.
  *
- * Dieses Skript kopiert die Eintraege eines bekannten Referenzmodells auf
- * den neuen Typ. Es laeuft beim Bauen des Images, direkt nach npm install,
- * und wird bei jedem Neubau frisch angewandt.
+ * Zweiter, ebenso wichtiger Punkt: Die Bibliothek waehlt anhand des Typs
+ * die Geraeteklasse aus. Nur bestimmte Klassen verarbeiten die
+ * Push-Ereignisse 3101 (Bewegung), 3102 (Person), 3106 (Tier) und 3107
+ * (Fahrzeug). Ein unbekannter Typ landet in der einfachen Camera-Klasse,
+ * die diese Ereignisse ignoriert - die Kamera meldet dann nie eine
+ * Erkennung, obwohl die Nachricht ankommt.
  *
- * Angewandt wird der Patch nur, wenn der Typ wirklich fehlt - kommt der
- * Eintrag irgendwann von bropat selbst, passiert hier nichts mehr.
+ * Ebenso haengen Befehle wie das Schalten des Lichts an Typpruefungen:
+ * station.switchLight() geht eine lange Fallunterscheidung durch und
+ * wirft am Ende NotSupportedError, wenn keine passt.
+ *
+ * Dieses Skript kopiert die Tabelleneintraege eines bekannten
+ * Referenzmodells auf den neuen Typ UND sorgt dafuer, dass der Typ
+ * dieselben Pruefungen besteht wie die Vorlage.
+ *
+ * Es laeuft beim Bauen des Images, direkt nach npm install, und wird bei
+ * jedem Neubau frisch angewandt. Angewandt wird nur, was wirklich fehlt -
+ * kommt der Eintrag irgendwann von bropat selbst, passiert nichts mehr.
  */
 
 const fs = require("fs");
@@ -24,8 +36,13 @@ const MODELLE = [
     typ: 10037,
     name: "CAMERA_C37",
     anzeige: "eufyCam C37 (T814X)",
-    // eufyCam C35 - gleiche Familie, Akku plus Solar
+    // eufyCam C35 - gleiche Familie, Akku plus Solar.
+    // Wichtig: Der C35 gehoert zu isSoloCameras und bekommt damit die
+    // SoloCamera-Klasse, die Personenerkennung verarbeitet. Ausserdem
+    // gibt es fuer isCameraC35 einen eigenen Lichtbefehl - genau den,
+    // den Kameras ohne HomeBase brauchen.
     vorlage: 10035,
+    pruefungen: ["isCamera", "isSoloCameras", "isCameraC35"],
   },
 ];
 
@@ -33,7 +50,7 @@ const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
 const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
 
-const MARKER = "// ---- eufy_max_patch ----";
+const MARKER = "// ---- eufy_max_patch v2 ----";
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
@@ -104,33 +121,51 @@ ${MARKER}
 }
 
 // ---------------------------------------------------------------------
-// 2. device.js - isCamera und Verwandte muessen den Typ kennen
+// 2. device.js - Typpruefungen erweitern
 // ---------------------------------------------------------------------
+//
+// Entscheidend ist isSoloCameras: eufysecurity.js waehlt darueber die
+// SoloCamera-Klasse aus, und nur die verarbeitet die Push-Ereignisse
+// 3101/3102/3106/3107. Ohne diese Zeile bleibt personDetected fuer immer
+// auf false, egal was Eufy schickt.
+//
+// isCameraC35 wiederum schaltet in station.switchLight() den Zweig frei,
+// der fuer Kameras ohne HomeBase gedacht ist.
 
 if (pruefen(DEVICE)) {
-  const typen = JSON.stringify(MODELLE.map((m) => m.typ));
+  const liste = JSON.stringify(
+    MODELLE.map((m) => ({ typ: m.typ, pruefungen: m.pruefungen || ["isCamera"] }))
+  );
 
   const code = `
 ${MARKER}
-// Nachgeruestete Kameramodelle als Kamera erkennen.
+// Nachgeruestete Kameramodelle in den Typpruefungen bekannt machen.
 (function () {
-  const neu = ${typen};
+  const modelle = ${liste};
   const D = exports.Device;
   if (!D) return;
 
-  // Diese Pruefungen entscheiden, ob ein Geraet ueberhaupt als Kamera
-  // behandelt wird. Ohne sie bleibt das Geraet ein namenloses Objekt.
-  for (const name of ["isCamera", "isBatteryDoorbell", "isWiredDoorbell"]) {
-    if (typeof D[name] !== "function") continue;
-    if (name !== "isCamera") continue;
+  for (const m of modelle) {
+    const uebernommen = [];
 
-    const original = D[name].bind(D);
-    D[name] = function (type) {
-      return neu.includes(type) || original(type);
-    };
+    for (const name of m.pruefungen) {
+      if (typeof D[name] !== "function") {
+        console.log("[eufy_max_patch] Pruefung " + name + " gibt es nicht");
+        continue;
+      }
+
+      const original = D[name].bind(D);
+      D[name] = function (type) {
+        return type === m.typ || original(type);
+      };
+      uebernommen.push(name);
+    }
+
+    console.log(
+      "[eufy_max_patch] Typ " + m.typ + " gilt jetzt fuer: " +
+      uebernommen.join(", ")
+    );
   }
-
-  console.log("[eufy_max_patch] isCamera kennt jetzt: " + neu.join(", "));
 })();
 `;
 
