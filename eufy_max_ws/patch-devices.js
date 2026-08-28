@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * Nachruesten und Korrigieren von Eufy-Geraetelogik in
- * eufy-security-client.
+ * Nachruesten und Korrigieren von Eufy-Logik in eufy-security-client.
  *
- * Drei Baustellen:
+ * Vier Baustellen:
  *
  * 1. Unbekannte Modelle. Die Bibliothek fuehrt feste Tabellen, welcher
  *    Geraetetyp welche Befehle und Eigenschaften hat. Fehlt ein Typ,
@@ -14,16 +13,19 @@
  *    Ein unbekannter Typ landet in der einfachen Camera-Klasse, die
  *    diese Ereignisse ignoriert.
  *
- * 3. Guard Mode. Station.setGuardMode() kennt zwei Befehlsformate:
- *    das aktuelle (CMD_SET_PAYLOAD) und ein altes (CMD_SET_ARMING mit
- *    Integer). Welches genommen wird, entscheidet unter anderem ein
- *    Vergleich der Firmware-Version gegen 2.0.7.9. Diese Schwelle passt
- *    nur fuer aeltere Modellreihen - neuere Kameras zaehlen ihre
- *    Firmware wieder ab 1.x, fallen deshalb faelschlich in den alten
- *    Zweig und ignorieren den Befehl stillschweigend. Der Ausweg:
- *    Die Seriennummer in isSoloCameraBySn aufnehmen. Diese Funktion
- *    wird in der ganzen Bibliothek NUR an dieser einen Stelle benutzt,
- *    ist also ein sicherer Schalter fuer das moderne Befehlsformat.
+ * 3. Guard Mode. Station.setGuardMode() kennt zwei Befehlsformate. Welches
+ *    genommen wird, entscheidet unter anderem ein Vergleich der
+ *    Firmware-Version gegen 2.0.7.9 - eine Annahme, die bei neueren
+ *    Kameras nicht mehr stimmt, weil deren Firmware wieder bei 1.x
+ *    beginnt. Ausweg: Seriennummer in isSoloCameraBySn aufnehmen. Diese
+ *    Funktion wird in der ganzen Bibliothek NUR an dieser Stelle benutzt.
+ *
+ * 4. Erfolgscode der Cloud-API. Eufy migriert seine Plattform und
+ *    antwortet auf den bisherigen Endpunkten inzwischen mit code 200
+ *    statt code 0. Die Bibliothek prueft aber auf 0 und behandelt alles
+ *    andere als Fehler - Folge: leere Geraeteliste ("No stations found",
+ *    "No devices found") bei voellig intakter Anmeldung. Der Patch laesst
+ *    zusaetzlich 200 als Erfolg gelten.
  *
  * Laeuft beim Bauen des Images, direkt nach npm install.
  */
@@ -35,18 +37,12 @@ const path = require("path");
 // Was gepatcht wird
 // ---------------------------------------------------------------------
 
-// Neue Modelle: Typnummer -> Vorlage und Anzeigename
 const MODELLE = [
   {
     typ: 10037,
     name: "CAMERA_C37",
     anzeige: "eufyCam C37 (T814X)",
-    // eufyCam C35 - gleiche Familie, Akku plus Solar.
     vorlage: 10035,
-    // isSoloCameras  -> Geraeteklasse SoloCamera (Personenerkennung)
-    // isCameraC35    -> Eigenschaftsauswertung der Familie
-    // isOutdoorPanAndTiltCamera -> Befehlsformat fuer Schwenkkameras,
-    //                   noetig fuer Licht und Schwenken
     pruefungen: [
       "isCamera",
       "isSoloCameras",
@@ -57,7 +53,7 @@ const MODELLE = [
 ];
 
 // Seriennummern-Praefixe, die das aktuelle Guard-Mode-Befehlsformat
-// benutzen sollen. Alles, was hier steht, schaltet zuverlaessig um.
+// benutzen sollen.
 const GUARD_MODE_PRAEFIXE = [
   "T814X", // eufyCam C37
   "T8423", // Floodlight Cam 2 Pro
@@ -68,8 +64,9 @@ const GUARD_MODE_PRAEFIXE = [
 const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
 const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
+const API = path.join(BASIS, "build/http/api.js");
 
-const MARKER = "// ---- eufy_max_patch v4 ----";
+const MARKER = "// ---- eufy_max_patch v5 ----";
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
@@ -102,7 +99,9 @@ ${MARKER}
       continue;
     }
 
-    exports.DeviceType[exports.DeviceType[m.name] = m.typ] = m.name;
+    // Enum in beide Richtungen ergaenzen
+    exports.DeviceType[m.name] = m.typ;
+    exports.DeviceType[m.typ] = m.name;
 
     const tabellen = [
       ["DeviceProperties", exports.DeviceProperties],
@@ -179,11 +178,6 @@ ${MARKER}
   }
 
   // Guard Mode: aktuelles Befehlsformat erzwingen.
-  // isSoloCameraBySn wird in der Bibliothek ausschliesslich in
-  // Station.setGuardMode() ausgewertet und entscheidet dort zwischen
-  // CMD_SET_PAYLOAD (aktuell) und CMD_SET_ARMING (alt). Die sonst
-  // ebenfalls geprueften Firmware-Versionen passen bei neueren
-  // Kameras nicht mehr, weil deren Zaehlung wieder bei 1.x beginnt.
   if (typeof D.isSoloCameraBySn === "function") {
     const originalSn = D.isSoloCameraBySn.bind(D);
     D.isSoloCameraBySn = function (sn) {
@@ -206,6 +200,37 @@ ${MARKER}
 
   fs.appendFileSync(DEVICE, code);
   console.log("device.js gepatcht");
+}
+
+// ---------------------------------------------------------------------
+// 3. api.js - Erfolgscode 200 zusaetzlich zu 0 akzeptieren
+// ---------------------------------------------------------------------
+//
+// Hier reicht kein Anhaengen: Die Pruefung steht inmitten jeder
+// Abfragemethode und muss im Text ersetzt werden.
+
+if (pruefen(API)) {
+  const alt = "result.code == types_1.ResponseErrorCode.CODE_OK";
+  const neu =
+    "(result.code == types_1.ResponseErrorCode.CODE_OK || result.code == 200)";
+
+  let inhalt = fs.readFileSync(API, "utf8");
+  const treffer = inhalt.split(alt).length - 1;
+
+  if (treffer === 0) {
+    console.log(
+      "[eufy_max_patch] api.js: Erfolgspruefung nicht gefunden - " +
+      "vermutlich schon angepasst"
+    );
+  } else {
+    inhalt = inhalt.split(alt).join(neu);
+    inhalt += `\n${MARKER}\n// Erfolgscode 200 wird zusaetzlich zu 0 akzeptiert.\n`;
+    fs.writeFileSync(API, inhalt);
+    console.log(
+      "[eufy_max_patch] api.js: " + treffer +
+      " Erfolgspruefungen akzeptieren jetzt auch code 200"
+    );
+  }
 }
 
 console.log("Patch abgeschlossen");
