@@ -1,35 +1,39 @@
 #!/usr/bin/env node
 /**
- * Nachruesten neuer Eufy-Kameramodelle in eufy-security-client.
+ * Nachruesten und Korrigieren von Eufy-Geraetelogik in
+ * eufy-security-client.
  *
- * Hintergrund: Die Bibliothek fuehrt feste Tabellen, welcher Geraetetyp
- * welche Befehle und Eigenschaften hat. Fehlt ein Typ, lehnt sie jeden
- * Befehl mit NotSupportedError ab - selbst wenn die Kamera protokollseitig
- * identisch zu einem bekannten Modell ist.
+ * Drei Baustellen:
  *
- * Zweiter Punkt: Die Bibliothek waehlt anhand des Typs die Geraeteklasse
- * aus. Nur bestimmte Klassen verarbeiten die Push-Ereignisse 3101
- * (Bewegung), 3102 (Person), 3106 (Tier) und 3107 (Fahrzeug). Ein
- * unbekannter Typ landet in der einfachen Camera-Klasse, die diese
- * Ereignisse ignoriert.
+ * 1. Unbekannte Modelle. Die Bibliothek fuehrt feste Tabellen, welcher
+ *    Geraetetyp welche Befehle und Eigenschaften hat. Fehlt ein Typ,
+ *    lehnt sie jeden Befehl mit NotSupportedError ab.
  *
- * Dritter Punkt: Befehle wie das Schalten des Lichts gehen durch eine
- * lange Fallunterscheidung, in der jedes Modell sein eigenes
- * Befehlsformat hat. Die eufyCam C37 ist eine Schwenk-/Neigekamera und
- * braucht dasselbe Format wie die SoloCam S340 - nicht das der festen
- * eufyCam C35. Faellt der Aufruf durch alle Zweige, wirft die Bibliothek
- * NotSupportedError; passt der Zweig nicht, geht der Befehl ins Leere.
+ * 2. Geraeteklasse. Nur bestimmte Klassen verarbeiten die Push-Ereignisse
+ *    3101 (Bewegung), 3102 (Person), 3106 (Tier) und 3107 (Fahrzeug).
+ *    Ein unbekannter Typ landet in der einfachen Camera-Klasse, die
+ *    diese Ereignisse ignoriert.
  *
- * Dieses Skript kopiert die Tabelleneintraege eines bekannten
- * Referenzmodells auf den neuen Typ UND sorgt dafuer, dass der Typ
- * dieselben Pruefungen besteht.
+ * 3. Guard Mode. Station.setGuardMode() kennt zwei Befehlsformate:
+ *    das aktuelle (CMD_SET_PAYLOAD) und ein altes (CMD_SET_ARMING mit
+ *    Integer). Welches genommen wird, entscheidet unter anderem ein
+ *    Vergleich der Firmware-Version gegen 2.0.7.9. Diese Schwelle passt
+ *    nur fuer aeltere Modellreihen - neuere Kameras zaehlen ihre
+ *    Firmware wieder ab 1.x, fallen deshalb faelschlich in den alten
+ *    Zweig und ignorieren den Befehl stillschweigend. Der Ausweg:
+ *    Die Seriennummer in isSoloCameraBySn aufnehmen. Diese Funktion
+ *    wird in der ganzen Bibliothek NUR an dieser einen Stelle benutzt,
+ *    ist also ein sicherer Schalter fuer das moderne Befehlsformat.
  *
- * Es laeuft beim Bauen des Images, direkt nach npm install, und wird bei
- * jedem Neubau frisch angewandt.
+ * Laeuft beim Bauen des Images, direkt nach npm install.
  */
 
 const fs = require("fs");
 const path = require("path");
+
+// ---------------------------------------------------------------------
+// Was gepatcht wird
+// ---------------------------------------------------------------------
 
 // Neue Modelle: Typnummer -> Vorlage und Anzeigename
 const MODELLE = [
@@ -37,16 +41,12 @@ const MODELLE = [
     typ: 10037,
     name: "CAMERA_C37",
     anzeige: "eufyCam C37 (T814X)",
-    // eufyCam C35 - gleiche Familie, Akku plus Solar. Liefert die
-    // Eigenschafts- und Befehlstabellen.
+    // eufyCam C35 - gleiche Familie, Akku plus Solar.
     vorlage: 10035,
-    // Pruefungen, die den neuen Typ ebenfalls durchlassen muessen:
-    //   isCamera                  - ueberhaupt als Kamera behandeln
-    //   isSoloCameras             - Geraeteklasse SoloCamera, verarbeitet
-    //                               Personen- und Bewegungserkennung
-    //   isCameraC35               - Eigenschaftsauswertung der Familie
-    //   isOutdoorPanAndTiltCamera - Befehlsformat fuer Schwenkkameras;
-    //                               noetig fuer Licht und Schwenken
+    // isSoloCameras  -> Geraeteklasse SoloCamera (Personenerkennung)
+    // isCameraC35    -> Eigenschaftsauswertung der Familie
+    // isOutdoorPanAndTiltCamera -> Befehlsformat fuer Schwenkkameras,
+    //                   noetig fuer Licht und Schwenken
     pruefungen: [
       "isCamera",
       "isSoloCameras",
@@ -56,11 +56,20 @@ const MODELLE = [
   },
 ];
 
+// Seriennummern-Praefixe, die das aktuelle Guard-Mode-Befehlsformat
+// benutzen sollen. Alles, was hier steht, schaltet zuverlaessig um.
+const GUARD_MODE_PRAEFIXE = [
+  "T814X", // eufyCam C37
+  "T8423", // Floodlight Cam 2 Pro
+  "T8417", // Indoor Cam
+  "T8170", // SoloCam S340
+];
+
 const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
 const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
 
-const MARKER = "// ---- eufy_max_patch v3 ----";
+const MARKER = "// ---- eufy_max_patch v4 ----";
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
@@ -93,10 +102,8 @@ ${MARKER}
       continue;
     }
 
-    // Enum in beide Richtungen ergaenzen
     exports.DeviceType[exports.DeviceType[m.name] = m.typ] = m.name;
 
-    // Tabellen vom Referenzmodell uebernehmen
     const tabellen = [
       ["DeviceProperties", exports.DeviceProperties],
       ["StationProperties", exports.StationProperties],
@@ -131,19 +138,21 @@ ${MARKER}
 }
 
 // ---------------------------------------------------------------------
-// 2. device.js - Typpruefungen erweitern
+// 2. device.js - Typpruefungen und Guard-Mode-Format
 // ---------------------------------------------------------------------
 
 if (pruefen(DEVICE)) {
   const liste = JSON.stringify(
     MODELLE.map((m) => ({ typ: m.typ, pruefungen: m.pruefungen || ["isCamera"] }))
   );
+  const praefixe = JSON.stringify(GUARD_MODE_PRAEFIXE);
 
   const code = `
 ${MARKER}
 // Nachgeruestete Kameramodelle in den Typpruefungen bekannt machen.
 (function () {
   const modelle = ${liste};
+  const praefixe = ${praefixe};
   const D = exports.Device;
   if (!D) return;
 
@@ -167,6 +176,30 @@ ${MARKER}
       "[eufy_max_patch] Typ " + m.typ + " gilt jetzt fuer: " +
       uebernommen.join(", ")
     );
+  }
+
+  // Guard Mode: aktuelles Befehlsformat erzwingen.
+  // isSoloCameraBySn wird in der Bibliothek ausschliesslich in
+  // Station.setGuardMode() ausgewertet und entscheidet dort zwischen
+  // CMD_SET_PAYLOAD (aktuell) und CMD_SET_ARMING (alt). Die sonst
+  // ebenfalls geprueften Firmware-Versionen passen bei neueren
+  // Kameras nicht mehr, weil deren Zaehlung wieder bei 1.x beginnt.
+  if (typeof D.isSoloCameraBySn === "function") {
+    const originalSn = D.isSoloCameraBySn.bind(D);
+    D.isSoloCameraBySn = function (sn) {
+      if (typeof sn === "string") {
+        for (const p of praefixe) {
+          if (sn.startsWith(p)) return true;
+        }
+      }
+      return originalSn(sn);
+    };
+    console.log(
+      "[eufy_max_patch] Guard Mode nutzt aktuelles Format fuer: " +
+      praefixe.join(", ")
+    );
+  } else {
+    console.log("[eufy_max_patch] isSoloCameraBySn gibt es nicht");
   }
 })();
 `;
