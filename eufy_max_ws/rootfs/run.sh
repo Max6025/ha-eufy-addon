@@ -12,21 +12,11 @@ if bashio::var.is_empty "${USERNAME}" || bashio::var.is_empty "${PASSWORD}"; the
 fi
 
 CONFIG_FILE="/data/config.json"
+CLIENT_DIR="/opt/eufy/node_modules/eufy-security-client"
 
 # ---------------------------------------------------------------------
 # Gespeicherte Sitzung verwerfen
 # ---------------------------------------------------------------------
-#
-# eufy-security-ws legt Anmeldedaten, Schluessel und Geraetekennungen in
-# /data/persistent.json ab. Nach einem Neubau des Images kann dort eine
-# neuere Programmfassung stecken, die mit den alten Daten nicht mehr
-# zurechtkommt. Eufy antwortet dann mit "get identity error" (Code 4404)
-# und liefert eine leere Geraeteliste - in Home Assistant sind
-# schlagartig alle Entities nicht verfuegbar.
-#
-# Dieser Schalter loescht die Sitzung, sodass sich der Server sauber neu
-# anmeldet. Danach wieder ausschalten, sonst meldet sich das Add-on bei
-# jedem Start neu an.
 
 if bashio::config.true 'reset_session'; then
     bashio::log.warning "reset_session ist aktiv - gespeicherte Sitzung wird geloescht"
@@ -34,6 +24,165 @@ if bashio::config.true 'reset_session'; then
     rm -f /data/*.db 2>/dev/null || true
     bashio::log.info "Sitzung geloescht. Bitte reset_session danach wieder ausschalten"
 fi
+
+# ---------------------------------------------------------------------
+# Bibliothek patchen - BEIM START, nicht beim Bauen
+# ---------------------------------------------------------------------
+#
+# Frueher lief der Patch im Dockerfile. Das ist unzuverlaessig, weil
+# Docker Schichten zwischenspeichert: Aendert sich das Patch-Skript,
+# baut der Supervisor das Image trotzdem nicht immer neu, und es laeuft
+# stillschweigend eine veraltete Fassung weiter.
+#
+# Beim Start ausgefuehrt gibt es dieses Problem nicht. Der Container
+# wird bei jedem Start aus dem Image neu erzeugt, der Patch also frisch
+# angewandt. Ein Marker in den Dateien verhindert doppeltes Anwenden,
+# falls das Image schon gepatcht ist.
+
+cat > /tmp/eufy_patch.js <<'PATCH_EOF'
+const fs = require("fs");
+const path = require("path");
+
+const MODELLE = [
+  {
+    typ: 10037,
+    name: "CAMERA_C37",
+    anzeige: "eufyCam C37 (T814X)",
+    vorlage: 10035,
+    pruefungen: [
+      "isCamera",
+      "isSoloCameras",
+      "isCameraC35",
+      "isOutdoorPanAndTiltCamera",
+    ],
+  },
+];
+
+const GUARD_MODE_PRAEFIXE = ["T814X", "T8423", "T8417", "T8170"];
+
+const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
+const TYPES = path.join(BASIS, "build/http/types.js");
+const DEVICE = path.join(BASIS, "build/http/device.js");
+const API = path.join(BASIS, "build/http/api.js");
+
+const MARKER = "// ---- eufy_max_patch v5 ----";
+
+function pruefen(datei) {
+  if (!fs.existsSync(datei)) {
+    console.log("[eufy_max_patch] FEHLT: " + datei);
+    return false;
+  }
+  if (fs.readFileSync(datei, "utf8").includes(MARKER)) {
+    console.log("[eufy_max_patch] " + path.basename(datei) + ": bereits gepatcht");
+    return false;
+  }
+  return true;
+}
+
+if (pruefen(TYPES)) {
+  const liste = JSON.stringify(MODELLE);
+  fs.appendFileSync(TYPES, `
+${MARKER}
+(function () {
+  const modelle = ${liste};
+  for (const m of modelle) {
+    if (exports.DeviceType[m.typ] !== undefined) {
+      console.log("[eufy_max_patch] Typ " + m.typ + " ist bereits bekannt");
+      continue;
+    }
+    exports.DeviceType[m.name] = m.typ;
+    exports.DeviceType[m.typ] = m.name;
+    const tabellen = [
+      ["DeviceProperties", exports.DeviceProperties],
+      ["StationProperties", exports.StationProperties],
+      ["DeviceCommands", exports.DeviceCommands],
+      ["StationCommands", exports.StationCommands],
+    ];
+    for (const [bezeichnung, tabelle] of tabellen) {
+      if (!tabelle) continue;
+      const vorlage = tabelle[m.vorlage];
+      if (vorlage === undefined) {
+        console.log("[eufy_max_patch] " + bezeichnung + ": keine Vorlage " + m.vorlage);
+        continue;
+      }
+      tabelle[m.typ] = Array.isArray(vorlage) ? vorlage.slice() : Object.assign({}, vorlage);
+    }
+    console.log("[eufy_max_patch] Typ " + m.typ + " (" + m.anzeige + ") nach Vorlage " + m.vorlage + " ergaenzt");
+  }
+})();
+`);
+  console.log("[eufy_max_patch] types.js gepatcht");
+}
+
+if (pruefen(DEVICE)) {
+  const liste = JSON.stringify(
+    MODELLE.map((m) => ({ typ: m.typ, pruefungen: m.pruefungen }))
+  );
+  const praefixe = JSON.stringify(GUARD_MODE_PRAEFIXE);
+  fs.appendFileSync(DEVICE, `
+${MARKER}
+(function () {
+  const modelle = ${liste};
+  const praefixe = ${praefixe};
+  const D = exports.Device;
+  if (!D) return;
+  for (const m of modelle) {
+    const uebernommen = [];
+    for (const name of m.pruefungen) {
+      if (typeof D[name] !== "function") {
+        console.log("[eufy_max_patch] Pruefung " + name + " gibt es nicht");
+        continue;
+      }
+      const original = D[name].bind(D);
+      D[name] = function (type) { return type === m.typ || original(type); };
+      uebernommen.push(name);
+    }
+    console.log("[eufy_max_patch] Typ " + m.typ + " gilt jetzt fuer: " + uebernommen.join(", "));
+  }
+  if (typeof D.isSoloCameraBySn === "function") {
+    const originalSn = D.isSoloCameraBySn.bind(D);
+    D.isSoloCameraBySn = function (sn) {
+      if (typeof sn === "string") {
+        for (const p of praefixe) { if (sn.startsWith(p)) return true; }
+      }
+      return originalSn(sn);
+    };
+    console.log("[eufy_max_patch] Guard Mode nutzt aktuelles Format fuer: " + praefixe.join(", "));
+  }
+})();
+`);
+  console.log("[eufy_max_patch] device.js gepatcht");
+}
+
+// Eufy antwortet auf den bisherigen Endpunkten inzwischen mit code 200
+// statt code 0. Die Bibliothek prueft auf 0 und wertet alles andere als
+// Fehler - Folge: leere Geraeteliste bei intakter Anmeldung.
+if (pruefen(API)) {
+  const alt = "result.code == types_1.ResponseErrorCode.CODE_OK";
+  const neu = "(result.code == types_1.ResponseErrorCode.CODE_OK || result.code == 200)";
+  let inhalt = fs.readFileSync(API, "utf8");
+  const treffer = inhalt.split(alt).length - 1;
+  if (treffer === 0) {
+    console.log("[eufy_max_patch] api.js: Erfolgspruefung nicht gefunden");
+  } else {
+    inhalt = inhalt.split(alt).join(neu);
+    inhalt += "\n" + MARKER + "\n";
+    fs.writeFileSync(API, inhalt);
+    console.log("[eufy_max_patch] api.js: " + treffer + " Erfolgspruefungen akzeptieren jetzt auch code 200");
+  }
+}
+PATCH_EOF
+
+if [ -d "${CLIENT_DIR}" ]; then
+    node /tmp/eufy_patch.js "${CLIENT_DIR}" || \
+        bashio::log.warning "Patch konnte nicht angewandt werden"
+else
+    bashio::log.warning "eufy-security-client nicht unter ${CLIENT_DIR} gefunden"
+fi
+
+# ---------------------------------------------------------------------
+# Konfiguration
+# ---------------------------------------------------------------------
 
 # Feste IP-Adressen der Stationen. Verhindert, dass sich Kameras ueber
 # Eufys Cloud-Relay verbinden statt lokal. Format je Eintrag: SERIENNUMMER:IP
@@ -50,9 +199,6 @@ if bashio::config.has_value 'station_ip_addresses'; then
     bashio::log.info "Feste Stations-IPs: ${STATION_IPS}"
 fi
 
-# eufy-security-ws liest seine Einstellungen ausschliesslich aus einer
-# config.json. Die wird hier bei jedem Start neu erzeugt, damit
-# Aenderungen im UI sofort greifen.
 jq -n \
     --arg username "${USERNAME}" \
     --arg password "${PASSWORD}" \
@@ -92,13 +238,11 @@ if [ -z "${SERVER}" ] || [ ! -f "${SERVER}" ]; then
     bashio::exit.nok "eufy-security-ws wurde im Image nicht gefunden - Add-on neu bauen"
 fi
 
-# Installierte Fassung ins Protokoll schreiben. Hilft, wenn nach einem
-# Neubau etwas anders laeuft als vorher.
 PKG="/opt/eufy/node_modules/eufy-security-ws/package.json"
 if [ -f "${PKG}" ]; then
     bashio::log.info "eufy-security-ws $(jq -r '.version' "${PKG}")"
 fi
-PKG_CLIENT="/opt/eufy/node_modules/eufy-security-client/package.json"
+PKG_CLIENT="${CLIENT_DIR}/package.json"
 if [ -f "${PKG_CLIENT}" ]; then
     bashio::log.info "eufy-security-client $(jq -r '.version' "${PKG_CLIENT}")"
 fi
@@ -117,18 +261,9 @@ fi
 
 bashio::log.info "Starte Server auf 0.0.0.0:3000 (Host: $(hostname))"
 
-# Host, Port und Konfigurationspfad werden ausschliesslich ueber die
-# Kommandozeile ausgewertet - nicht ueber die config.json.
 ARGS=(--config "${CONFIG_FILE}" --host 0.0.0.0 --port 3000)
 
-# ---------------------------------------------------------------------
-# Protokollmodus
-# ---------------------------------------------------------------------
-
 if bashio::config.true 'event_log'; then
-    # Nur Erkennungen zeigen. Gefiltert wird mit awk - das BusyBox-grep
-    # im Alpine-Image kennt kein --line-buffered und wuerde die Ausgabe
-    # blockweise zurueckhalten.
     bashio::log.info "Ereignisfilter aktiv - es werden nur Erkennungen angezeigt"
 
     node "${SERVER}" "${ARGS[@]}" --verbose 2>&1 | awk '
