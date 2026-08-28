@@ -13,6 +13,28 @@ fi
 
 CONFIG_FILE="/data/config.json"
 
+# ---------------------------------------------------------------------
+# Gespeicherte Sitzung verwerfen
+# ---------------------------------------------------------------------
+#
+# eufy-security-ws legt Anmeldedaten, Schluessel und Geraetekennungen in
+# /data/persistent.json ab. Nach einem Neubau des Images kann dort eine
+# neuere Programmfassung stecken, die mit den alten Daten nicht mehr
+# zurechtkommt. Eufy antwortet dann mit "get identity error" (Code 4404)
+# und liefert eine leere Geraeteliste - in Home Assistant sind
+# schlagartig alle Entities nicht verfuegbar.
+#
+# Dieser Schalter loescht die Sitzung, sodass sich der Server sauber neu
+# anmeldet. Danach wieder ausschalten, sonst meldet sich das Add-on bei
+# jedem Start neu an.
+
+if bashio::config.true 'reset_session'; then
+    bashio::log.warning "reset_session ist aktiv - gespeicherte Sitzung wird geloescht"
+    rm -f /data/persistent.json
+    rm -f /data/*.db 2>/dev/null || true
+    bashio::log.info "Sitzung geloescht. Bitte reset_session danach wieder ausschalten"
+fi
+
 # Feste IP-Adressen der Stationen. Verhindert, dass sich Kameras ueber
 # Eufys Cloud-Relay verbinden statt lokal. Format je Eintrag: SERIENNUMMER:IP
 STATION_IPS="{}"
@@ -70,6 +92,17 @@ if [ -z "${SERVER}" ] || [ ! -f "${SERVER}" ]; then
     bashio::exit.nok "eufy-security-ws wurde im Image nicht gefunden - Add-on neu bauen"
 fi
 
+# Installierte Fassung ins Protokoll schreiben. Hilft, wenn nach einem
+# Neubau etwas anders laeuft als vorher.
+PKG="/opt/eufy/node_modules/eufy-security-ws/package.json"
+if [ -f "${PKG}" ]; then
+    bashio::log.info "eufy-security-ws $(jq -r '.version' "${PKG}")"
+fi
+PKG_CLIENT="/opt/eufy/node_modules/eufy-security-client/package.json"
+if [ -f "${PKG_CLIENT}" ]; then
+    bashio::log.info "eufy-security-client $(jq -r '.version' "${PKG_CLIENT}")"
+fi
+
 # Discovery erst nach dem Start melden, damit die Integration nicht in
 # einen noch nicht lauschenden Port rennt.
 (
@@ -100,9 +133,7 @@ if bashio::config.true 'event_log'; then
 
     node "${SERVER}" "${ARGS[@]}" --verbose 2>&1 | awk '
         BEGIN { IGNORECASE = 1 }
-        # Rauschen ausblenden
         /heartbeat|Heartbeat|Sending ping|checkin|Checkin/ { next }
-        # Erkennungen und eingehende Nachrichten durchlassen
         /detected|Detected|onPerson|onMotion|onPet|onVehicle|onRing/ { print; fflush(); next }
         /person|Person|human|Human|motion|Motion|vehicle|Vehicle/ { print; fflush(); next }
         /rings|ringing|Ringing|package|Package/ { print; fflush(); next }
