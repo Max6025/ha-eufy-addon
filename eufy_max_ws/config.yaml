@@ -1,6 +1,6 @@
 ---
 name: Eufy Max WS
-version: "1.8.0"
+version: "1.9.0"
 slug: eufy_max_ws
 description: WebSocket-Server fuer Eufy-Kameras, passend zur Eufy Max Integration
 url: https://github.com/Max6025/ha-eufy-addon
@@ -32,6 +32,7 @@ options:
   polling_interval_minutes: 1
   p2p_connection_setup: 1
   station_ip_addresses: []
+  guard_mode_altes_format: []
   reset_session: false
   event_log: false
   debug: false
@@ -46,6 +47,8 @@ schema:
   polling_interval_minutes: int(1,240)
   p2p_connection_setup: int(1,2)
   station_ip_addresses:
+    - str
+  guard_mode_altes_format:
     - str
   reset_session: bool
   event_log: bool
