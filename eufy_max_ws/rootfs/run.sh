@@ -13,6 +13,7 @@ fi
 
 CONFIG_FILE="/data/config.json"
 CLIENT_DIR="/opt/eufy/node_modules/eufy-security-client"
+PATCH_CONFIG="/tmp/eufy_patch.json"
 
 # ---------------------------------------------------------------------
 # Gespeicherte Sitzung verwerfen
@@ -26,23 +27,48 @@ if bashio::config.true 'reset_session'; then
 fi
 
 # ---------------------------------------------------------------------
+# Einstellungen fuer den Patch
+# ---------------------------------------------------------------------
+#
+# guard_mode_altes_format: Seriennummern, die den Moduswechsel im alten
+# Befehlsformat bekommen sollen (CMD_SET_ARMING statt CMD_SET_PAYLOAD).
+#
+# Welches Format eine Kamera versteht, laesst sich von aussen nicht
+# erkennen. Die Bibliothek entscheidet anhand der Firmware-Version -
+# eine Annahme, die bei neueren Modellen nicht mehr stimmt. Sogar zwei
+# Kameras desselben Modells koennen sich unterschiedlich verhalten. Wer
+# eine Kamera hat, die ihren Modus zwar meldet, einen Wechsel aber nicht
+# annimmt, traegt ihre Seriennummer hier ein.
+
+LEGACY="[]"
+if bashio::config.has_value 'guard_mode_altes_format'; then
+    LEGACY=$(bashio::config 'guard_mode_altes_format' \
+        | jq -R -s 'split("\n") | map(select(length > 0))')
+    bashio::log.info "Altes Guard-Mode-Format fuer: ${LEGACY}"
+fi
+
+jq -n --argjson legacy "${LEGACY}" '{legacy: $legacy}' > "${PATCH_CONFIG}"
+
+# ---------------------------------------------------------------------
 # Bibliothek patchen - BEIM START, nicht beim Bauen
 # ---------------------------------------------------------------------
 #
 # Frueher lief der Patch im Dockerfile. Das ist unzuverlaessig, weil
-# Docker Schichten zwischenspeichert: Aendert sich das Patch-Skript,
-# baut der Supervisor das Image trotzdem nicht immer neu, und es laeuft
-# stillschweigend eine veraltete Fassung weiter.
-#
-# Beim Start ausgefuehrt gibt es dieses Problem nicht. Der Container
-# wird bei jedem Start aus dem Image neu erzeugt, der Patch also frisch
-# angewandt. Ein Marker in den Dateien verhindert doppeltes Anwenden,
-# falls das Image schon gepatcht ist.
+# Docker Schichten zwischenspeichert und dann stillschweigend eine alte
+# Fassung weiterlaeuft. Beim Start gibt es das Problem nicht.
 
 cat > /tmp/eufy_patch.js <<'PATCH_EOF'
 const fs = require("fs");
 const path = require("path");
 
+const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
+const TYPES = path.join(BASIS, "build/http/types.js");
+const DEVICE = path.join(BASIS, "build/http/device.js");
+const API = path.join(BASIS, "build/http/api.js");
+
+const MARKER = "// ---- eufy_max_patch v6 ----";
+
+// Neue Modelle: Typnummer, Vorlage, betroffene Typpruefungen
 const MODELLE = [
   {
     typ: 10037,
@@ -58,115 +84,142 @@ const MODELLE = [
   },
 ];
 
-const GUARD_MODE_PRAEFIXE = ["T814X", "T8423", "T8417", "T8170"];
+// Seriennummern-Praefixe, die das aktuelle Guard-Mode-Format bekommen
+const PRAEFIXE = ["T814X", "T8423", "T8417", "T8170"];
 
-const BASIS = process.argv[2] || "/opt/eufy/node_modules/eufy-security-client";
-const TYPES = path.join(BASIS, "build/http/types.js");
-const DEVICE = path.join(BASIS, "build/http/device.js");
-const API = path.join(BASIS, "build/http/api.js");
-
-const MARKER = "// ---- eufy_max_patch v5 ----";
+// Seriennummern, die ausdruecklich das ALTE Format bekommen sollen
+let LEGACY = [];
+try {
+  const cfg = JSON.parse(fs.readFileSync("/tmp/eufy_patch.json", "utf8"));
+  LEGACY = Array.isArray(cfg.legacy) ? cfg.legacy : [];
+} catch (err) {
+  LEGACY = [];
+}
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
     console.log("[eufy_max_patch] FEHLT: " + datei);
     return false;
   }
-  if (fs.readFileSync(datei, "utf8").includes(MARKER)) {
+  if (fs.readFileSync(datei, "utf8").indexOf(MARKER) !== -1) {
     console.log("[eufy_max_patch] " + path.basename(datei) + ": bereits gepatcht");
     return false;
   }
   return true;
 }
 
+// ---------------------------------------------------------------------
+// 1. types.js - Enum und Tabellen
+// ---------------------------------------------------------------------
+
 if (pruefen(TYPES)) {
-  const liste = JSON.stringify(MODELLE);
-  fs.appendFileSync(TYPES, `
-${MARKER}
-(function () {
-  const modelle = ${liste};
-  for (const m of modelle) {
-    if (exports.DeviceType[m.typ] !== undefined) {
-      console.log("[eufy_max_patch] Typ " + m.typ + " ist bereits bekannt");
-      continue;
-    }
-    exports.DeviceType[m.name] = m.typ;
-    exports.DeviceType[m.typ] = m.name;
-    const tabellen = [
-      ["DeviceProperties", exports.DeviceProperties],
-      ["StationProperties", exports.StationProperties],
-      ["DeviceCommands", exports.DeviceCommands],
-      ["StationCommands", exports.StationCommands],
-    ];
-    for (const [bezeichnung, tabelle] of tabellen) {
-      if (!tabelle) continue;
-      const vorlage = tabelle[m.vorlage];
-      if (vorlage === undefined) {
-        console.log("[eufy_max_patch] " + bezeichnung + ": keine Vorlage " + m.vorlage);
-        continue;
-      }
-      tabelle[m.typ] = Array.isArray(vorlage) ? vorlage.slice() : Object.assign({}, vorlage);
-    }
-    console.log("[eufy_max_patch] Typ " + m.typ + " (" + m.anzeige + ") nach Vorlage " + m.vorlage + " ergaenzt");
-  }
-})();
-`);
+  var codeTypes = "\n" + MARKER + "\n" +
+    "(function () {\n" +
+    "  var modelle = " + JSON.stringify(MODELLE) + ";\n" +
+    "  for (var i = 0; i < modelle.length; i++) {\n" +
+    "    var m = modelle[i];\n" +
+    "    if (exports.DeviceType[m.typ] !== undefined) {\n" +
+    "      console.log('[eufy_max_patch] Typ ' + m.typ + ' ist bereits bekannt');\n" +
+    "      continue;\n" +
+    "    }\n" +
+    "    exports.DeviceType[m.name] = m.typ;\n" +
+    "    exports.DeviceType[m.typ] = m.name;\n" +
+    "    var tabellen = [\n" +
+    "      ['DeviceProperties', exports.DeviceProperties],\n" +
+    "      ['StationProperties', exports.StationProperties],\n" +
+    "      ['DeviceCommands', exports.DeviceCommands],\n" +
+    "      ['StationCommands', exports.StationCommands]\n" +
+    "    ];\n" +
+    "    for (var t = 0; t < tabellen.length; t++) {\n" +
+    "      var bezeichnung = tabellen[t][0];\n" +
+    "      var tabelle = tabellen[t][1];\n" +
+    "      if (!tabelle) continue;\n" +
+    "      var vorlage = tabelle[m.vorlage];\n" +
+    "      if (vorlage === undefined) {\n" +
+    "        console.log('[eufy_max_patch] ' + bezeichnung + ': keine Vorlage ' + m.vorlage);\n" +
+    "        continue;\n" +
+    "      }\n" +
+    "      tabelle[m.typ] = Array.isArray(vorlage) ? vorlage.slice() : Object.assign({}, vorlage);\n" +
+    "    }\n" +
+    "    console.log('[eufy_max_patch] Typ ' + m.typ + ' (' + m.anzeige + ') nach Vorlage ' + m.vorlage + ' ergaenzt');\n" +
+    "  }\n" +
+    "})();\n";
+
+  fs.appendFileSync(TYPES, codeTypes);
   console.log("[eufy_max_patch] types.js gepatcht");
 }
 
+// ---------------------------------------------------------------------
+// 2. device.js - Typpruefungen und Guard-Mode-Format
+// ---------------------------------------------------------------------
+
 if (pruefen(DEVICE)) {
-  const liste = JSON.stringify(
-    MODELLE.map((m) => ({ typ: m.typ, pruefungen: m.pruefungen }))
-  );
-  const praefixe = JSON.stringify(GUARD_MODE_PRAEFIXE);
-  fs.appendFileSync(DEVICE, `
-${MARKER}
-(function () {
-  const modelle = ${liste};
-  const praefixe = ${praefixe};
-  const D = exports.Device;
-  if (!D) return;
-  for (const m of modelle) {
-    const uebernommen = [];
-    for (const name of m.pruefungen) {
-      if (typeof D[name] !== "function") {
-        console.log("[eufy_max_patch] Pruefung " + name + " gibt es nicht");
-        continue;
-      }
-      const original = D[name].bind(D);
-      D[name] = function (type) { return type === m.typ || original(type); };
-      uebernommen.push(name);
-    }
-    console.log("[eufy_max_patch] Typ " + m.typ + " gilt jetzt fuer: " + uebernommen.join(", "));
-  }
-  if (typeof D.isSoloCameraBySn === "function") {
-    const originalSn = D.isSoloCameraBySn.bind(D);
-    D.isSoloCameraBySn = function (sn) {
-      if (typeof sn === "string") {
-        for (const p of praefixe) { if (sn.startsWith(p)) return true; }
-      }
-      return originalSn(sn);
-    };
-    console.log("[eufy_max_patch] Guard Mode nutzt aktuelles Format fuer: " + praefixe.join(", "));
-  }
-})();
-`);
+  var kurz = MODELLE.map(function (m) {
+    return { typ: m.typ, pruefungen: m.pruefungen };
+  });
+
+  var codeDevice = "\n" + MARKER + "\n" +
+    "(function () {\n" +
+    "  var modelle = " + JSON.stringify(kurz) + ";\n" +
+    "  var praefixe = " + JSON.stringify(PRAEFIXE) + ";\n" +
+    "  var legacy = " + JSON.stringify(LEGACY) + ";\n" +
+    "  var D = exports.Device;\n" +
+    "  if (!D) return;\n" +
+    "  for (var i = 0; i < modelle.length; i++) {\n" +
+    "    var m = modelle[i];\n" +
+    "    var uebernommen = [];\n" +
+    "    for (var p = 0; p < m.pruefungen.length; p++) {\n" +
+    "      var name = m.pruefungen[p];\n" +
+    "      if (typeof D[name] !== 'function') {\n" +
+    "        console.log('[eufy_max_patch] Pruefung ' + name + ' gibt es nicht');\n" +
+    "        continue;\n" +
+    "      }\n" +
+    "      (function (name, typ) {\n" +
+    "        var original = D[name].bind(D);\n" +
+    "        D[name] = function (type) { return type === typ || original(type); };\n" +
+    "      })(name, m.typ);\n" +
+    "      uebernommen.push(name);\n" +
+    "    }\n" +
+    "    console.log('[eufy_max_patch] Typ ' + m.typ + ' gilt jetzt fuer: ' + uebernommen.join(', '));\n" +
+    "  }\n" +
+    "  if (typeof D.isSoloCameraBySn === 'function') {\n" +
+    "    var originalSn = D.isSoloCameraBySn.bind(D);\n" +
+    "    D.isSoloCameraBySn = function (sn) {\n" +
+    "      if (typeof sn === 'string') {\n" +
+    "        for (var l = 0; l < legacy.length; l++) {\n" +
+    "          if (sn.indexOf(legacy[l]) === 0) return false;\n" +
+    "        }\n" +
+    "        for (var q = 0; q < praefixe.length; q++) {\n" +
+    "          if (sn.indexOf(praefixe[q]) === 0) return true;\n" +
+    "        }\n" +
+    "      }\n" +
+    "      return originalSn(sn);\n" +
+    "    };\n" +
+    "    console.log('[eufy_max_patch] Guard Mode aktuelles Format fuer: ' + praefixe.join(', '));\n" +
+    "    if (legacy.length) {\n" +
+    "      console.log('[eufy_max_patch] Guard Mode ALTES Format fuer: ' + legacy.join(', '));\n" +
+    "    }\n" +
+    "  }\n" +
+    "})();\n";
+
+  fs.appendFileSync(DEVICE, codeDevice);
   console.log("[eufy_max_patch] device.js gepatcht");
 }
 
-// Eufy antwortet auf den bisherigen Endpunkten inzwischen mit code 200
-// statt code 0. Die Bibliothek prueft auf 0 und wertet alles andere als
-// Fehler - Folge: leere Geraeteliste bei intakter Anmeldung.
+// ---------------------------------------------------------------------
+// 3. api.js - Erfolgscode 200 zusaetzlich zu 0 akzeptieren
+// ---------------------------------------------------------------------
+
 if (pruefen(API)) {
-  const alt = "result.code == types_1.ResponseErrorCode.CODE_OK";
-  const neu = "(result.code == types_1.ResponseErrorCode.CODE_OK || result.code == 200)";
-  let inhalt = fs.readFileSync(API, "utf8");
-  const treffer = inhalt.split(alt).length - 1;
+  var alt = "result.code == types_1.ResponseErrorCode.CODE_OK";
+  var neu = "(result.code == types_1.ResponseErrorCode.CODE_OK || result.code == 200)";
+  var inhalt = fs.readFileSync(API, "utf8");
+  var treffer = inhalt.split(alt).length - 1;
+
   if (treffer === 0) {
     console.log("[eufy_max_patch] api.js: Erfolgspruefung nicht gefunden");
   } else {
-    inhalt = inhalt.split(alt).join(neu);
-    inhalt += "\n" + MARKER + "\n";
+    inhalt = inhalt.split(alt).join(neu) + "\n" + MARKER + "\n";
     fs.writeFileSync(API, inhalt);
     console.log("[eufy_max_patch] api.js: " + treffer + " Erfolgspruefungen akzeptieren jetzt auch code 200");
   }
@@ -184,8 +237,6 @@ fi
 # Konfiguration
 # ---------------------------------------------------------------------
 
-# Feste IP-Adressen der Stationen. Verhindert, dass sich Kameras ueber
-# Eufys Cloud-Relay verbinden statt lokal. Format je Eintrag: SERIENNUMMER:IP
 STATION_IPS="{}"
 if bashio::config.has_value 'station_ip_addresses'; then
     STATION_IPS=$(bashio::config 'station_ip_addresses' \
@@ -247,8 +298,6 @@ if [ -f "${PKG_CLIENT}" ]; then
     bashio::log.info "eufy-security-client $(jq -r '.version' "${PKG_CLIENT}")"
 fi
 
-# Discovery erst nach dem Start melden, damit die Integration nicht in
-# einen noch nicht lauschenden Port rennt.
 (
     sleep 12
     DISCOVERY_CONFIG=$(bashio::var.json host "$(hostname)" port "^3000")
