@@ -66,9 +66,19 @@ const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
 const API = path.join(BASIS, "build/http/api.js");
 
-const MARKER = "// ---- eufy_max_patch v6 ----";
+const MARKER = "// ---- eufy_max_patch v7 ----";
 
 // Neue Modelle: Typnummer, Vorlage, betroffene Typpruefungen
+//
+// hasBattery ist die wichtigste Pruefung von allen. Sie entscheidet in
+// der P2P-Sitzung, ob eine Station als Akkugeraet gilt. Nur dann haelt
+// die Bibliothek die Verbindung mit Keepalive-Pings, trennt sie 30 s
+// nach dem letzten Befehl von sich aus und baut sie beim naechsten
+// Befehl frisch auf. Fehlt die Pruefung, wird die Kamera wie eine
+// HomeBase am Netzteil behandelt: Dauerverbindung, endloses Neuverbinden
+// - und wenn die Kamera die Sitzung zum Stromsparen selbst kappt, merkt
+// die Bibliothek das erst nach zehn ausgebliebenen Herzschlaegen, also
+// rund 50 Sekunden. So lange haengt dann jeder Moduswechsel.
 const MODELLE = [
   {
     typ: 10037,
@@ -80,6 +90,7 @@ const MODELLE = [
       "isSoloCameras",
       "isCameraC35",
       "isOutdoorPanAndTiltCamera",
+      "hasBattery",
     ],
   },
 ];

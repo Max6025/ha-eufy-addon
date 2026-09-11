@@ -16,7 +16,7 @@ Hand eingetragen werden.
 | `event_duration_seconds` | Wie lange ein Bewegungsereignis als aktiv gilt |
 | `accept_invitations` | Freigabe-Einladungen automatisch annehmen |
 | `polling_interval_minutes` | Abstand der Cloud-Abfragen |
-| `p2p_connection_setup` | Wie sich der Server mit den Kameras verbindet: `0` nur lokal, `1` nur Cloud-Relay, `2` bevorzugt lokal (Empfehlung). Bei `0` funktionieren nur Kameras im selben Netz. |
+| `p2p_connection_setup` | Wie sich der Server mit den Kameras verbindet. In der aktuellen Bibliothek (eufy-security-client 4.x) heißt `1` **nur lokal** und `2` **schnellster Weg** (lokal und Cloud-Relay gleichzeitig, der erste Treffer gewinnt — das ist auch der Standard der Bibliothek). Bei `1` funktionieren nur Kameras im selben Netz; antwortet eine nicht auf die lokale Suche, gibt es nach 20 s gar keine Verbindung. |
 | `station_ip_addresses` | Feste IP je Station, Format `SERIENNUMMER:IP`. Verhindert, dass sich Kameras über Eufys langsames Cloud-Relay verbinden. Beispiel: `T8170T10250310E0:192.168.3.188` |
 | `debug` | Ausführliches Protokoll bei Problemen |
 

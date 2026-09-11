@@ -27,7 +27,20 @@
  *    "No devices found") bei voellig intakter Anmeldung. Der Patch laesst
  *    zusaetzlich 200 als Erfolg gelten.
  *
- * Laeuft beim Bauen des Images, direkt nach npm install.
+ * 5. Akkugeraet. Device.hasBattery() ist eine feste Typliste und wird in
+ *    der P2P-Sitzung abgefragt. Nur wer drinsteht, gilt als Akkugeraet:
+ *    Keepalive-Pings, Trennung 30 s nach dem letzten Befehl, frischer
+ *    Verbindungsaufbau beim naechsten. Ein nachgeruestetes Modell steht
+ *    nicht drin und wird wie eine HomeBase am Netzteil behandelt - mit
+ *    Dauerverbindung und endlosem Neuverbinden. Kappt die Kamera die
+ *    Sitzung dann zum Stromsparen, merkt die Bibliothek das erst nach
+ *    zehn ausgebliebenen Herzschlaegen (~50 s); so lange haengt jeder
+ *    Befehl in der Warteschlange. Deshalb steht hasBattery bei den
+ *    Pruefungen mit dabei.
+ *
+ * Laeuft beim Bauen des Images, direkt nach npm install. Dieselbe Logik
+ * steckt noch einmal in rootfs/run.sh und laeuft beim Start - das ist die
+ * massgebliche Fassung, weil Docker gebaute Schichten zwischenspeichert.
  */
 
 const fs = require("fs");
@@ -48,6 +61,7 @@ const MODELLE = [
       "isSoloCameras",
       "isCameraC35",
       "isOutdoorPanAndTiltCamera",
+      "hasBattery",
     ],
   },
 ];
@@ -66,7 +80,7 @@ const TYPES = path.join(BASIS, "build/http/types.js");
 const DEVICE = path.join(BASIS, "build/http/device.js");
 const API = path.join(BASIS, "build/http/api.js");
 
-const MARKER = "// ---- eufy_max_patch v5 ----";
+const MARKER = "// ---- eufy_max_patch v7 ----";
 
 function pruefen(datei) {
   if (!fs.existsSync(datei)) {
